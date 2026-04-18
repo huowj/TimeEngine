@@ -1,0 +1,29 @@
+DSIL Time Engine Demo Summary
+=============================
+
+Input file: sample_packets/mock_stream.jsonl
+Corrected events file: outputs/corrected_events.jsonl
+Metrics file: outputs/metrics.csv
+
+Total packets: 1570
+Total PPS events: 10
+Total sensor events: 1560
+
+Final sync state: LOCKED
+Final offset_us: 3386.559
+Final drift_ppm: -8.551552
+Final confidence: 0.9394
+
+State counts: {'LOST': 393, 'LOCKED': 984, 'HOLDOVER': 193}
+
+PPS residual mean us: 312.106
+PPS residual p50 us: -34.136
+PPS residual p95 us: 1917.347
+
+PPS jitter mean us: 16.000
+PPS jitter p50 us: 10.000
+PPS jitter p95 us: 50.400
+
+Offset plot: outputs/offset_trend.png
+Drift plot: outputs/drift_trend.png
+Confidence plot: outputs/confidence_trend.png
