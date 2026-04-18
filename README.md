@@ -21,5 +21,6 @@ It demonstrates:
 ## Run
 
 ```bash
-python3 tools/run_demo.py
+python3 tools/generate_mock_data.py
+PYTHONPATH=. python3 tools/run_demo.py
 
