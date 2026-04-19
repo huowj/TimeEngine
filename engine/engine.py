@@ -3,6 +3,7 @@ from typing import Dict, List, Optional
 import math
 
 from .models import CorrectedEvent, Packet, SyncState
+from .logger import info, warn
 
 
 @dataclass
@@ -12,7 +13,6 @@ class TimeEngineState:
     confidence: float = 0.0
     sync_state: SyncState = SyncState.LOST
 
-    # PPS anchor model
     anchor_board_time_us: Optional[int] = None
     anchor_target_time_us: Optional[int] = None
 
@@ -20,15 +20,12 @@ class TimeEngineState:
     last_target_time_us: Optional[int] = None
     last_measured_offset_us: Optional[float] = None
 
-    # monotonic guards
     last_board_time_us: Optional[int] = None
     last_corrected_us: Optional[float] = None
 
-    # state / tracking
     consecutive_good_pps: int = 0
     holdover_entry_board_time_us: Optional[int] = None
 
-    # observability histories
     pps_residual_history: List[float] = field(default_factory=list)
     pps_interval_jitter_history: List[float] = field(default_factory=list)
     drift_history: List[float] = field(default_factory=list)
@@ -36,7 +33,6 @@ class TimeEngineState:
     confidence_history: List[float] = field(default_factory=list)
     state_history: List[str] = field(default_factory=list)
 
-    # counters
     total_packets: int = 0
     total_pps: int = 0
     total_sensor: int = 0
@@ -56,20 +52,18 @@ class TimeEngine:
         self.holdover_timeout_us = 1_500_000
         self.lost_timeout_us = 5_000_000
 
-        # robustness thresholds
         self.outlier_threshold_us = 3000.0
         self.max_drift_ppm = 50.0
 
-    # =========================
-    # Entry
     # =========================
     def process_packet(self, packet: Packet) -> CorrectedEvent:
         s = self.state
         s.total_packets += 1
 
-        # ===== board_time monotonic guard =====
+        # monotonic guard
         if s.last_board_time_us is not None:
             if packet.board_time_us <= s.last_board_time_us:
+                warn(f"Non-monotonic board_time detected: {packet.board_time_us}")
                 packet.board_time_us = s.last_board_time_us + 1
         s.last_board_time_us = packet.board_time_us
 
@@ -84,12 +78,9 @@ class TimeEngine:
         return event
 
     # =========================
-    # PPS
-    # =========================
     def _handle_pps(self, packet: Packet) -> CorrectedEvent:
         s = self.state
 
-        # ===== Anchor =====
         if s.anchor_board_time_us is None:
             s.anchor_board_time_us = packet.board_time_us
             s.anchor_target_time_us = 1_000_000
@@ -103,11 +94,10 @@ class TimeEngine:
                 target_time_us = s.last_target_time_us + 1_000_000
 
         measured_offset_us = float(target_time_us - packet.board_time_us)
-
         predicted_offset = self._predict_offset(packet.board_time_us)
         residual_us = measured_offset_us - predicted_offset
 
-        # ===== FIRST PPS BOOTSTRAP =====
+        # ===== first PPS bootstrap =====
         if s.last_pps_board_time_us is None:
             s.offset_us = measured_offset_us
             s.drift_ppm = 0.0
@@ -117,19 +107,20 @@ class TimeEngine:
             s.last_target_time_us = target_time_us
             s.last_measured_offset_us = measured_offset_us
 
+            info(f"First PPS anchor established, offset={measured_offset_us:.2f}")
             self._update_confidence(packet.board_time_us)
             return self._build_corrected_event(packet)
 
-        # ===== 记录 residual =====
         s.pps_residual_history.append(residual_us)
 
-        # ===== OUTLIER（冷启动放宽）=====
+        # ===== outlier =====
         warmup = s.consecutive_good_pps < 3
         if not warmup and abs(residual_us) > self.outlier_threshold_us:
+            warn(f"PPS outlier rejected: residual={residual_us:.2f}")
             s.consecutive_good_pps = 0
             return self._build_corrected_event(packet)
 
-        # ===== jitter / drift =====
+        # ===== drift =====
         interval_us = packet.board_time_us - s.last_pps_board_time_us
         jitter_us = interval_us - 1_000_000
         s.pps_interval_jitter_history.append(float(jitter_us))
@@ -137,7 +128,6 @@ class TimeEngine:
         dt_s = interval_us / 1_000_000.0
         if s.last_measured_offset_us is not None and dt_s > 0:
             drift = (measured_offset_us - s.last_measured_offset_us) / dt_s
-
             drift = max(min(drift, self.max_drift_ppm), -self.max_drift_ppm)
 
             s.drift_ppm = (
@@ -145,36 +135,32 @@ class TimeEngine:
                 (1 - self.alpha_drift) * s.drift_ppm
             )
 
-        # ===== offset update =====
+        # ===== offset =====
         s.offset_us = (
             self.alpha_offset * measured_offset_us +
             (1 - self.alpha_offset) * s.offset_us
         )
 
-        # ===== LOCK LOGIC（冷启动放宽）=====
+        # ===== lock logic =====
         if s.sync_state == SyncState.LOCKED:
-            # 已锁定：允许轻微波动，不掉锁
             if abs(residual_us) > self.outlier_threshold_us:
+                warn("LOCKED -> HOLDOVER (outlier detected)")
                 s.consecutive_good_pps = 0
                 s.sync_state = SyncState.HOLDOVER
         else:
-            # 未锁定：严格判断
             if warmup:
                 s.consecutive_good_pps += 1
             else:
-                threshold = self.relock_residual_threshold_us
-
-                if abs(residual_us) < threshold:
+                if abs(residual_us) < self.relock_residual_threshold_us:
                     s.consecutive_good_pps += 1
                 else:
                     s.consecutive_good_pps = 1
 
         if s.consecutive_good_pps >= self.lock_min_pps:
             if s.sync_state != SyncState.LOCKED:
-                print(f"[INFO] LOCKED after {s.consecutive_good_pps} PPS")
+                info(f"LOCKED after {s.consecutive_good_pps} PPS")
             s.sync_state = SyncState.LOCKED
 
-        # ===== update state =====
         s.last_pps_board_time_us = packet.board_time_us
         s.last_target_time_us = target_time_us
         s.last_measured_offset_us = measured_offset_us
@@ -185,20 +171,17 @@ class TimeEngine:
         return self._build_corrected_event(packet)
 
     # =========================
-    # SENSOR
-    # =========================
     def _handle_sensor(self, packet: Packet) -> CorrectedEvent:
         s = self.state
 
         self._update_state_for_missing_pps(packet.board_time_us)
 
         predicted_offset = self._predict_offset(packet.board_time_us)
-
         corrected_us = packet.board_time_us + predicted_offset
 
-        # ===== corrected monotonic guard =====
         if s.last_corrected_us is not None:
             if corrected_us <= s.last_corrected_us:
+                warn("Corrected time not monotonic, fixing")
                 corrected_us = s.last_corrected_us + 1
 
         s.last_corrected_us = corrected_us
@@ -219,21 +202,16 @@ class TimeEngine:
         )
 
     # =========================
-    # Predict
-    # =========================
     def _predict_offset(self, board_time_us: int) -> float:
         s = self.state
         if s.last_pps_board_time_us is None:
             return s.offset_us
 
         dt_s = (board_time_us - s.last_pps_board_time_us) / 1_000_000.0
-
         drift = max(min(s.drift_ppm, self.max_drift_ppm), -self.max_drift_ppm)
 
         return s.offset_us + drift * dt_s
 
-    # =========================
-    # State
     # =========================
     def _update_state_for_missing_pps(self, board_time_us: int) -> None:
         s = self.state
@@ -245,14 +223,14 @@ class TimeEngine:
         gap_us = board_time_us - s.last_pps_board_time_us
 
         if s.sync_state == SyncState.LOCKED and gap_us > self.holdover_timeout_us:
+            warn(f"Enter HOLDOVER at t={board_time_us}")
             s.sync_state = SyncState.HOLDOVER
             s.holdover_entry_board_time_us = board_time_us
 
         if gap_us > self.lost_timeout_us:
+            warn("Enter LOST (PPS missing too long)")
             s.sync_state = SyncState.LOST
 
-    # =========================
-    # Confidence
     # =========================
     def _update_confidence(self, board_time_us: int) -> None:
         s = self.state
@@ -263,7 +241,6 @@ class TimeEngine:
 
         age_s = (board_time_us - s.last_pps_board_time_us) / 1_000_000.0
 
-        # ===== exponential decay in HOLDOVER =====
         if s.sync_state == SyncState.HOLDOVER:
             freshness = math.exp(-age_s / 3.0)
         else:
