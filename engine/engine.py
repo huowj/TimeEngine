@@ -89,6 +89,7 @@ class TimeEngine:
     def _handle_pps(self, packet: Packet) -> CorrectedEvent:
         s = self.state
 
+        # ===== Anchor =====
         if s.anchor_board_time_us is None:
             s.anchor_board_time_us = packet.board_time_us
             s.anchor_target_time_us = 1_000_000
@@ -106,56 +107,74 @@ class TimeEngine:
         predicted_offset = self._predict_offset(packet.board_time_us)
         residual_us = measured_offset_us - predicted_offset
 
+        # ===== FIRST PPS BOOTSTRAP =====
+        if s.last_pps_board_time_us is None:
+            s.offset_us = measured_offset_us
+            s.drift_ppm = 0.0
+            s.consecutive_good_pps = 1
+
+            s.last_pps_board_time_us = packet.board_time_us
+            s.last_target_time_us = target_time_us
+            s.last_measured_offset_us = measured_offset_us
+
+            self._update_confidence(packet.board_time_us)
+            return self._build_corrected_event(packet)
+
+        # ===== 记录 residual =====
         s.pps_residual_history.append(residual_us)
 
-        # ===== PPS OUTLIER PROTECTION =====
-        if abs(residual_us) > self.outlier_threshold_us:
-            # ignore update
+        # ===== OUTLIER（冷启动放宽）=====
+        warmup = s.consecutive_good_pps < 3
+        if not warmup and abs(residual_us) > self.outlier_threshold_us:
             s.consecutive_good_pps = 0
             return self._build_corrected_event(packet)
 
-        # jitter / drift
-        if s.last_pps_board_time_us is not None:
-            interval_us = packet.board_time_us - s.last_pps_board_time_us
-            jitter_us = interval_us - 1_000_000
-            s.pps_interval_jitter_history.append(float(jitter_us))
+        # ===== jitter / drift =====
+        interval_us = packet.board_time_us - s.last_pps_board_time_us
+        jitter_us = interval_us - 1_000_000
+        s.pps_interval_jitter_history.append(float(jitter_us))
 
-            dt_s = interval_us / 1_000_000.0
-            if s.last_measured_offset_us is not None and dt_s > 0:
-                drift = (measured_offset_us - s.last_measured_offset_us) / dt_s
+        dt_s = interval_us / 1_000_000.0
+        if s.last_measured_offset_us is not None and dt_s > 0:
+            drift = (measured_offset_us - s.last_measured_offset_us) / dt_s
 
-                # ===== drift clamp =====
-                drift = max(min(drift, self.max_drift_ppm), -self.max_drift_ppm)
+            drift = max(min(drift, self.max_drift_ppm), -self.max_drift_ppm)
 
-                s.drift_ppm = (
-                    self.alpha_drift * drift +
-                    (1 - self.alpha_drift) * s.drift_ppm
-                )
-
-        # offset update
-        if s.last_pps_board_time_us is None:
-            s.offset_us = measured_offset_us
-        else:
-            s.offset_us = (
-                self.alpha_offset * measured_offset_us +
-                (1 - self.alpha_offset) * s.offset_us
+            s.drift_ppm = (
+                self.alpha_drift * drift +
+                (1 - self.alpha_drift) * s.drift_ppm
             )
 
-        # lock logic
-        threshold = (
-            self.relock_residual_threshold_us
-            if s.sync_state in (SyncState.HOLDOVER, SyncState.LOST)
-            else self.lock_residual_threshold_us
+        # ===== offset update =====
+        s.offset_us = (
+            self.alpha_offset * measured_offset_us +
+            (1 - self.alpha_offset) * s.offset_us
         )
 
-        if abs(residual_us) < threshold:
-            s.consecutive_good_pps += 1
+        # ===== LOCK LOGIC（冷启动放宽）=====
+        if s.sync_state == SyncState.LOCKED:
+            # 已锁定：允许轻微波动，不掉锁
+            if abs(residual_us) > self.outlier_threshold_us:
+                s.consecutive_good_pps = 0
+                s.sync_state = SyncState.HOLDOVER
         else:
-            s.consecutive_good_pps = 1
+            # 未锁定：严格判断
+            if warmup:
+                s.consecutive_good_pps += 1
+            else:
+                threshold = self.relock_residual_threshold_us
+
+                if abs(residual_us) < threshold:
+                    s.consecutive_good_pps += 1
+                else:
+                    s.consecutive_good_pps = 1
 
         if s.consecutive_good_pps >= self.lock_min_pps:
+            if s.sync_state != SyncState.LOCKED:
+                print(f"[INFO] LOCKED after {s.consecutive_good_pps} PPS")
             s.sync_state = SyncState.LOCKED
 
+        # ===== update state =====
         s.last_pps_board_time_us = packet.board_time_us
         s.last_target_time_us = target_time_us
         s.last_measured_offset_us = measured_offset_us

@@ -31,25 +31,24 @@ def generate_events(scenario: str):
     offset_us = 3500.0
     drift_ppm = 12.0
 
-    events = []
-
     # 场景控制
     if scenario == "normal":
         pps_drop = []
         pps_outlier = {}
 
     elif scenario == "holdover":
-        pps_drop = [6, 7, 8, 9]  # 丢失 PPS
+        pps_drop = [6, 7, 8, 9]
         pps_outlier = {}
 
     elif scenario == "jitter_outlier":
         pps_drop = []
-        pps_outlier = {5: 5000}  # 第5秒异常
+        pps_outlier = {5: 5000}
 
     else:
         raise ValueError("Unknown scenario")
 
-    # PPS
+    # ===== PPS 单独生成 =====
+    pps_events = []
     for sec in range(1, duration_s + 1):
         if sec in pps_drop:
             continue
@@ -60,42 +59,65 @@ def generate_events(scenario: str):
         if sec in pps_outlier:
             jitter += pps_outlier[sec]
 
-        bt = board_time_from_true_time_us(true_time_us + jitter, offset_us, drift_ppm)
+        bt = board_time_from_true_time_us(
+            true_time_us + jitter,
+            offset_us,
+            drift_ppm
+        )
 
-        events.append({
+        pps_events.append({
             "type": "TIMING_EVENT",
             "source": "pps",
             "board_time_us": bt,
         })
 
-    # IMU (100Hz)
+    # ===== IMU =====
+    sensor_events = []
+
     for i in range(duration_s * 100):
         true_time_us = i * 10_000
         jitter = random.gauss(0, 80)
 
-        bt = board_time_from_true_time_us(true_time_us + jitter, offset_us, drift_ppm)
+        bt = board_time_from_true_time_us(
+            true_time_us + jitter,
+            offset_us,
+            drift_ppm
+        )
 
-        events.append({
+        sensor_events.append({
             "type": "SENSOR_EVENT",
             "sensor_id": "imu_vn100_0",
             "board_time_us": bt,
         })
 
-    # Camera (30Hz)
+    # ===== Camera =====
     cam_period = 1_000_000 / 30
     for i in range(duration_s * 30):
         true_time_us = i * cam_period
         jitter = random.gauss(0, 250)
 
-        bt = board_time_from_true_time_us(true_time_us + jitter, offset_us, drift_ppm)
+        bt = board_time_from_true_time_us(
+            true_time_us + jitter,
+            offset_us,
+            drift_ppm
+        )
 
-        events.append({
+        sensor_events.append({
             "type": "SENSOR_EVENT",
             "sensor_id": "camera_front_0",
             "board_time_us": bt,
         })
 
-    events.sort(key=lambda x: x["board_time_us"])
+    # ===== 合并 + 保证 PPS 优先 =====
+    events = pps_events + sensor_events
+
+    events.sort(
+        key=lambda x: (
+            x["board_time_us"],
+            0 if x["type"] == "TIMING_EVENT" else 1
+        )
+    )
+
     return events
 
 
