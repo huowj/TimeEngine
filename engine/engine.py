@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
+import math
 
 from .models import CorrectedEvent, Packet, SyncState
 
@@ -19,6 +20,10 @@ class TimeEngineState:
     last_target_time_us: Optional[int] = None
     last_measured_offset_us: Optional[float] = None
 
+    # monotonic guards
+    last_board_time_us: Optional[int] = None
+    last_corrected_us: Optional[float] = None
+
     # state / tracking
     consecutive_good_pps: int = 0
     holdover_entry_board_time_us: Optional[int] = None
@@ -31,7 +36,7 @@ class TimeEngineState:
     confidence_history: List[float] = field(default_factory=list)
     state_history: List[str] = field(default_factory=list)
 
-    # simple counters
+    # counters
     total_packets: int = 0
     total_pps: int = 0
     total_sensor: int = 0
@@ -41,11 +46,9 @@ class TimeEngine:
     def __init__(self) -> None:
         self.state = TimeEngineState()
 
-        # smoothing
         self.alpha_offset = 0.25
         self.alpha_drift = 0.15
 
-        # thresholds
         self.lock_min_pps = 3
         self.lock_residual_threshold_us = 300.0
         self.relock_residual_threshold_us = 400.0
@@ -53,73 +56,89 @@ class TimeEngine:
         self.holdover_timeout_us = 1_500_000
         self.lost_timeout_us = 5_000_000
 
+        # robustness thresholds
+        self.outlier_threshold_us = 3000.0
+        self.max_drift_ppm = 50.0
+
+    # =========================
+    # Entry
+    # =========================
     def process_packet(self, packet: Packet) -> CorrectedEvent:
-        self.state.total_packets += 1
+        s = self.state
+        s.total_packets += 1
+
+        # ===== board_time monotonic guard =====
+        if s.last_board_time_us is not None:
+            if packet.board_time_us <= s.last_board_time_us:
+                packet.board_time_us = s.last_board_time_us + 1
+        s.last_board_time_us = packet.board_time_us
+
         if packet.type == "TIMING_EVENT" and packet.source == "pps":
-            self.state.total_pps += 1
+            s.total_pps += 1
             event = self._handle_pps(packet)
         else:
-            self.state.total_sensor += 1
+            s.total_sensor += 1
             event = self._handle_sensor(packet)
 
         self._record_state_snapshot()
         return event
 
+    # =========================
+    # PPS
+    # =========================
     def _handle_pps(self, packet: Packet) -> CorrectedEvent:
         s = self.state
 
         if s.anchor_board_time_us is None:
-            # First PPS defines anchor.
-            # We align it to corrected second boundary = 1_000_000 us.
             s.anchor_board_time_us = packet.board_time_us
             s.anchor_target_time_us = 1_000_000
             target_time_us = s.anchor_target_time_us
         else:
-            assert s.anchor_board_time_us is not None
-            assert s.anchor_target_time_us is not None
-
             elapsed_us = packet.board_time_us - s.anchor_board_time_us
-            elapsed_sec_rounded = max(0, int(round(elapsed_us / 1_000_000.0)))
-            target_time_us = s.anchor_target_time_us + elapsed_sec_rounded * 1_000_000
+            elapsed_sec = max(0, int(round(elapsed_us / 1_000_000.0)))
+            target_time_us = s.anchor_target_time_us + elapsed_sec * 1_000_000
 
-            # Ensure monotonic target time
-            if s.last_target_time_us is not None and target_time_us <= s.last_target_time_us:
+            if s.last_target_time_us and target_time_us <= s.last_target_time_us:
                 target_time_us = s.last_target_time_us + 1_000_000
 
         measured_offset_us = float(target_time_us - packet.board_time_us)
 
-        predicted_offset_before_update = self._predict_offset(packet.board_time_us)
-        residual_us = measured_offset_us - predicted_offset_before_update
+        predicted_offset = self._predict_offset(packet.board_time_us)
+        residual_us = measured_offset_us - predicted_offset
+
         s.pps_residual_history.append(residual_us)
 
-        # interval / jitter
+        # ===== PPS OUTLIER PROTECTION =====
+        if abs(residual_us) > self.outlier_threshold_us:
+            # ignore update
+            s.consecutive_good_pps = 0
+            return self._build_corrected_event(packet)
+
+        # jitter / drift
         if s.last_pps_board_time_us is not None:
             interval_us = packet.board_time_us - s.last_pps_board_time_us
-
-            expected_interval_us = 1_000_000
-            if s.last_target_time_us is not None:
-                target_interval_us = target_time_us - s.last_target_time_us
-                if target_interval_us > 0:
-                    expected_interval_us = target_interval_us
-
-            jitter_us = interval_us - expected_interval_us
+            jitter_us = interval_us - 1_000_000
             s.pps_interval_jitter_history.append(float(jitter_us))
 
             dt_s = interval_us / 1_000_000.0
             if s.last_measured_offset_us is not None and dt_s > 0:
-                measured_drift_ppm = (measured_offset_us - s.last_measured_offset_us) / dt_s
+                drift = (measured_offset_us - s.last_measured_offset_us) / dt_s
+
+                # ===== drift clamp =====
+                drift = max(min(drift, self.max_drift_ppm), -self.max_drift_ppm)
+
                 s.drift_ppm = (
-                    self.alpha_drift * measured_drift_ppm
-                    + (1.0 - self.alpha_drift) * s.drift_ppm
+                    self.alpha_drift * drift +
+                    (1 - self.alpha_drift) * s.drift_ppm
                 )
 
-        # update offset after drift estimate
+        # offset update
         if s.last_pps_board_time_us is None:
             s.offset_us = measured_offset_us
         else:
             s.offset_us = (
-                self.alpha_offset * measured_offset_us
-                + (1.0 - self.alpha_offset) * s.offset_us
+                self.alpha_offset * measured_offset_us +
+                (1 - self.alpha_offset) * s.offset_us
             )
 
         # lock logic
@@ -144,26 +163,26 @@ class TimeEngine:
 
         self._update_confidence(packet.board_time_us)
 
-        corrected_us = packet.board_time_us + s.offset_us
-        return CorrectedEvent(
-            type=packet.type,
-            source=packet.source,
-            sensor_id=packet.sensor_id,
-            board_time_us=packet.board_time_us,
-            timestamp_corrected_us=corrected_us,
-            offset_us=s.offset_us,
-            drift_ppm=s.drift_ppm,
-            confidence=s.confidence,
-            sync_state=s.sync_state.value,
-            payload=packet.payload,
-        )
+        return self._build_corrected_event(packet)
 
+    # =========================
+    # SENSOR
+    # =========================
     def _handle_sensor(self, packet: Packet) -> CorrectedEvent:
         s = self.state
+
         self._update_state_for_missing_pps(packet.board_time_us)
 
-        predicted_offset_us = self._predict_offset(packet.board_time_us)
-        corrected_us = packet.board_time_us + predicted_offset_us
+        predicted_offset = self._predict_offset(packet.board_time_us)
+
+        corrected_us = packet.board_time_us + predicted_offset
+
+        # ===== corrected monotonic guard =====
+        if s.last_corrected_us is not None:
+            if corrected_us <= s.last_corrected_us:
+                corrected_us = s.last_corrected_us + 1
+
+        s.last_corrected_us = corrected_us
 
         self._update_confidence(packet.board_time_us)
 
@@ -173,23 +192,33 @@ class TimeEngine:
             sensor_id=packet.sensor_id,
             board_time_us=packet.board_time_us,
             timestamp_corrected_us=corrected_us,
-            offset_us=predicted_offset_us,
+            offset_us=predicted_offset,
             drift_ppm=s.drift_ppm,
             confidence=s.confidence,
             sync_state=s.sync_state.value,
             payload=packet.payload,
         )
 
+    # =========================
+    # Predict
+    # =========================
     def _predict_offset(self, board_time_us: int) -> float:
         s = self.state
         if s.last_pps_board_time_us is None:
             return s.offset_us
 
         dt_s = (board_time_us - s.last_pps_board_time_us) / 1_000_000.0
-        return s.offset_us + s.drift_ppm * dt_s
 
+        drift = max(min(s.drift_ppm, self.max_drift_ppm), -self.max_drift_ppm)
+
+        return s.offset_us + drift * dt_s
+
+    # =========================
+    # State
+    # =========================
     def _update_state_for_missing_pps(self, board_time_us: int) -> None:
         s = self.state
+
         if s.last_pps_board_time_us is None:
             s.sync_state = SyncState.LOST
             return
@@ -198,12 +227,14 @@ class TimeEngine:
 
         if s.sync_state == SyncState.LOCKED and gap_us > self.holdover_timeout_us:
             s.sync_state = SyncState.HOLDOVER
-            if s.holdover_entry_board_time_us is None:
-                s.holdover_entry_board_time_us = board_time_us
+            s.holdover_entry_board_time_us = board_time_us
 
         if gap_us > self.lost_timeout_us:
             s.sync_state = SyncState.LOST
 
+    # =========================
+    # Confidence
+    # =========================
     def _update_confidence(self, board_time_us: int) -> None:
         s = self.state
 
@@ -211,36 +242,51 @@ class TimeEngine:
             s.confidence = 0.0
             return
 
-        age_s = max(0.0, (board_time_us - s.last_pps_board_time_us) / 1_000_000.0)
+        age_s = (board_time_us - s.last_pps_board_time_us) / 1_000_000.0
 
-        if s.sync_state == SyncState.LOCKED:
-            freshness_score = max(0.0, 1.0 - age_s / 2.0)
-        elif s.sync_state == SyncState.HOLDOVER:
-            freshness_score = max(0.0, 1.0 - age_s / 5.0)
+        # ===== exponential decay in HOLDOVER =====
+        if s.sync_state == SyncState.HOLDOVER:
+            freshness = math.exp(-age_s / 3.0)
         else:
-            freshness_score = max(0.0, 0.3 - age_s / 10.0)
+            freshness = max(0.0, 1.0 - age_s / 2.0)
 
-        residual = abs(s.pps_residual_history[-1]) if s.pps_residual_history else 1000.0
-        residual_score = max(0.0, 1.0 - min(residual / 500.0, 1.0))
+        residual = abs(s.pps_residual_history[-1]) if s.pps_residual_history else 1000
+        residual_score = max(0, 1 - residual / 500)
 
-        jitter = abs(s.pps_interval_jitter_history[-1]) if s.pps_interval_jitter_history else 0.0
-        jitter_score = max(0.0, 1.0 - min(jitter / 300.0, 1.0))
+        jitter = abs(s.pps_interval_jitter_history[-1]) if s.pps_interval_jitter_history else 0
+        jitter_score = max(0, 1 - jitter / 300)
 
-        drift_score = max(0.0, 1.0 - min(abs(s.drift_ppm) / 50.0, 1.0))
+        drift_score = max(0, 1 - abs(s.drift_ppm) / 50)
 
         confidence = (
-            0.35 * freshness_score
-            + 0.30 * residual_score
-            + 0.20 * drift_score
-            + 0.15 * jitter_score
+            0.35 * freshness +
+            0.30 * residual_score +
+            0.20 * drift_score +
+            0.15 * jitter_score
         )
 
         if s.sync_state == SyncState.LOST:
             confidence = min(confidence, 0.2)
-        elif s.sync_state == SyncState.HOLDOVER:
-            confidence = min(confidence, 0.75)
 
         s.confidence = max(0.0, min(confidence, 1.0))
+
+    # =========================
+    def _build_corrected_event(self, packet: Packet) -> CorrectedEvent:
+        s = self.state
+        corrected = packet.board_time_us + s.offset_us
+
+        return CorrectedEvent(
+            type=packet.type,
+            source=packet.source,
+            sensor_id=packet.sensor_id,
+            board_time_us=packet.board_time_us,
+            timestamp_corrected_us=corrected,
+            offset_us=s.offset_us,
+            drift_ppm=s.drift_ppm,
+            confidence=s.confidence,
+            sync_state=s.sync_state.value,
+            payload=packet.payload,
+        )
 
     def _record_state_snapshot(self) -> None:
         s = self.state

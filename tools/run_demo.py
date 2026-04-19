@@ -12,6 +12,7 @@ from tools.metrics_utils import (
     compute_jitter_stats,
     compute_confidence_stats,
 )
+from tools.plot_metrics import plot_metrics
 
 
 # =========================
@@ -133,15 +134,14 @@ def main():
             metrics.append({
                 "board_time_us": packet.board_time_us,
                 "state": corrected.sync_state,
-                "offset": corrected.offset_us,
-                "drift": corrected.drift_ppm,
+                "offset_us": corrected.offset_us,        # ✅ 改这里
+                "drift_ppm": corrected.drift_ppm,        # ✅ 改这里
                 "confidence": corrected.confidence,
                 "residual": engine.state.pps_residual_history[-1]
                     if engine.state.pps_residual_history else None,
                 "jitter": engine.state.pps_interval_jitter_history[-1]
                     if engine.state.pps_interval_jitter_history else None,
             })
-
             fout.write(json.dumps(corrected.to_dict()) + "\n")
 
             # 记录状态变化
@@ -196,6 +196,14 @@ def main():
         f.write("State transitions:\n")
         for t, s in state_changes:
             f.write(f"  {t} us -> {s}\n")
+
+    metrics_file = output_dir / "metrics.jsonl"
+
+    with metrics_file.open("w") as mf:
+        for m in metrics:
+            mf.write(json.dumps(m) + "\n")
+
+    plot_metrics(metrics, output_dir)
 
     # 控制台输出
     print("====================================")
