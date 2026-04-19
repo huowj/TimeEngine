@@ -11,6 +11,9 @@ from tools.metrics_utils import (
     compute_residual_stats,
     compute_jitter_stats,
     compute_confidence_stats,
+    compute_offset_continuity,
+    compute_holdover_drift_growth,
+    compute_confidence_behavior
 )
 from tools.plot_metrics import plot_metrics
 
@@ -156,13 +159,15 @@ def main():
             metrics.append({
                 "board_time_us": packet.board_time_us,
                 "state": corrected.sync_state,
-                "offset_us": corrected.offset_us,        # ✅ 改这里
-                "drift_ppm": corrected.drift_ppm,        # ✅ 改这里
+                "offset_us": corrected.offset_us,
+                "drift_ppm": corrected.drift_ppm,
                 "confidence": corrected.confidence,
                 "residual": engine.state.pps_residual_history[-1]
                     if engine.state.pps_residual_history else None,
                 "jitter": engine.state.pps_interval_jitter_history[-1]
                     if engine.state.pps_interval_jitter_history else None,
+                # 在你 metrics.append 里加
+                "predicted_offset_us": corrected.offset_us,
             })
             fout.write(json.dumps(corrected.to_dict()) + "\n")
 
@@ -181,6 +186,9 @@ def main():
     residual_stats = compute_residual_stats(metrics)
     jitter_stats = compute_jitter_stats(metrics)
     confidence_stats = compute_confidence_stats(metrics)
+    offset_continuity = compute_offset_continuity(metrics)
+    holdover_drift = compute_holdover_drift_growth(metrics)
+    confidence_behavior = compute_confidence_behavior(metrics)
 
     # 写 summary
     with summary_file.open("w") as f:
@@ -214,6 +222,20 @@ def main():
             f.write("Confidence:\n")
             f.write(f"  min: {confidence_stats['min']:.3f}\n")
             f.write(f"  recovery_time: {confidence_stats['recovery_time_s']}\n\n")
+
+        # ===== HOLDOVER质量验证 =====
+        if offset_continuity:
+            f.write("Offset continuity (us):\n")
+            f.write(f"  max_jump: {offset_continuity['max_jump']:.2f}\n")
+            f.write(f"  p95: {offset_continuity['p95']:.2f}\n\n")
+
+        if holdover_drift is not None:
+            f.write(f"Holdover drift growth: {holdover_drift:.2f} us\n\n")
+
+        if confidence_behavior:
+            f.write("Confidence behavior:\n")
+            f.write(f"  degraded during holdover: {confidence_behavior['degraded']}\n")
+            f.write(f"  recovered after relock: {confidence_behavior['recovered']}\n\n")
 
         f.write("State transitions:\n")
         for t, s in state_changes:
