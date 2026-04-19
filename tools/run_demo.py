@@ -4,6 +4,14 @@ import argparse
 from pathlib import Path
 
 from engine import Packet, TimeEngine
+from tools.metrics_utils import (
+    compute_time_to_lock,
+    compute_holdover_duration,
+    compute_relock_pps,
+    compute_residual_stats,
+    compute_jitter_stats,
+    compute_confidence_stats,
+)
 
 
 # =========================
@@ -112,6 +120,8 @@ def main():
 
     engine = TimeEngine()
 
+    metrics = []
+
     state_changes = []
     last_state = None
 
@@ -120,6 +130,17 @@ def main():
         for e in events:
             packet = Packet.from_dict(e)
             corrected = engine.process_packet(packet)
+            metrics.append({
+                "board_time_us": packet.board_time_us,
+                "state": corrected.sync_state,
+                "offset": corrected.offset_us,
+                "drift": corrected.drift_ppm,
+                "confidence": corrected.confidence,
+                "residual": engine.state.pps_residual_history[-1]
+                    if engine.state.pps_residual_history else None,
+                "jitter": engine.state.pps_interval_jitter_history[-1]
+                    if engine.state.pps_interval_jitter_history else None,
+            })
 
             fout.write(json.dumps(corrected.to_dict()) + "\n")
 
@@ -131,6 +152,14 @@ def main():
                 )
                 last_state = current_state
 
+    time_to_lock = compute_time_to_lock(metrics)
+    holdover_duration = compute_holdover_duration(metrics)
+    relock_pps = compute_relock_pps(metrics)
+
+    residual_stats = compute_residual_stats(metrics)
+    jitter_stats = compute_jitter_stats(metrics)
+    confidence_stats = compute_confidence_stats(metrics)
+
     # 写 summary
     with summary_file.open("w") as f:
         f.write(f"Scenario: {args.scenario}\n")
@@ -139,6 +168,30 @@ def main():
         f.write(f"Final offset_us: {engine.state.offset_us:.2f}\n")
         f.write(f"Final drift_ppm: {engine.state.drift_ppm:.2f}\n")
         f.write(f"Final confidence: {engine.state.confidence:.3f}\n\n")
+
+        # ===== Observability =====
+        f.write("=== Observability Metrics ===\n")
+
+        f.write(f"Time to LOCKED: {time_to_lock:.2f} s\n" if time_to_lock else "Time to LOCKED: N/A\n")
+        f.write(f"Holdover duration: {holdover_duration:.2f} s\n")
+        f.write(f"Relock PPS count: {relock_pps}\n\n")
+
+        if residual_stats:
+            f.write("Residual stats (us):\n")
+            f.write(f"  p50: {residual_stats['p50']:.2f}\n")
+            f.write(f"  p95: {residual_stats['p95']:.2f}\n")
+            f.write(f"  max: {residual_stats['max']:.2f}\n\n")
+
+        if jitter_stats:
+            f.write("Jitter stats (us):\n")
+            f.write(f"  p50: {jitter_stats['p50']:.2f}\n")
+            f.write(f"  p95: {jitter_stats['p95']:.2f}\n")
+            f.write(f"  max: {jitter_stats['max']:.2f}\n\n")
+
+        if confidence_stats:
+            f.write("Confidence:\n")
+            f.write(f"  min: {confidence_stats['min']:.3f}\n")
+            f.write(f"  recovery_time: {confidence_stats['recovery_time_s']}\n\n")
 
         f.write("State transitions:\n")
         for t, s in state_changes:
