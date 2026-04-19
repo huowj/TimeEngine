@@ -364,3 +364,149 @@ using:
 - PPS anchor
 - holdover
 - confidence
+
+---
+
+## 13. Parameter Design and Rationale
+
+This section explains the rationale behind key parameters used in the Time Engine.
+
+These parameters are not arbitrarily chosen; each controls a specific behavior of the system.
+
+---
+
+### 13.1 alpha_offset
+
+``` text
+alpha_offset = 0.25
+```
+
+Controls how quickly the offset estimate reacts to new PPS measurements.
+
+- Higher value:
+  - faster convergence
+  - more sensitive to jitter
+- Lower value:
+  - smoother offset
+  - slower convergence
+
+Chosen value (0.25) balances responsiveness and noise suppression.
+
+---
+
+### 13.2 alpha_drift
+
+``` text
+alpha_drift = 0.15
+```
+
+Controls smoothing of drift estimation.
+
+- Higher value:
+  - reacts faster to drift changes
+  - may amplify noise
+- Lower value:
+  - more stable drift
+  - slower adaptation
+
+Chosen smaller than alpha_offset because drift is inherently noisier.
+
+---
+
+### 13.3 lock_min_pps
+
+``` text
+lock_min_pps = 3
+```
+
+Minimum number of consecutive valid PPS measurements required to enter LOCKED state.
+
+- Too small:
+  - risk false lock
+- Too large:
+  - slow lock acquisition
+
+Value 3 provides basic stability without delaying lock.
+
+---
+
+### 13.4 lock_residual_threshold_us
+
+``` text
+lock_residual_threshold_us = 300
+```
+
+Threshold for acceptable offset residual during lock acquisition.
+
+- Smaller threshold:
+  - stricter lock condition
+  - more robust but harder to lock
+- Larger threshold:
+  - easier to lock
+  - risk inaccurate lock
+
+300 µs is chosen based on expected PPS jitter scale.
+
+---
+
+### 13.5 relock_residual_threshold_us
+
+``` text
+relock_residual_threshold_us = 400
+```
+
+Threshold for re-locking after HOLDOVER.
+
+- Slightly larger than lock threshold to allow faster recovery
+- Prevents oscillation between states
+
+---
+
+### 13.6 holdover_timeout_us
+
+``` text
+holdover_timeout_us = 1.5e6
+```
+
+Time without PPS before entering HOLDOVER.
+
+- Too small:
+  - frequent unnecessary HOLDOVER
+- Too large:
+  - delayed detection of PPS loss
+
+1.5 seconds allows tolerance for minor PPS jitter while detecting real outages.
+
+---
+
+### 13.7 lost_timeout_us
+
+``` text
+lost_timeout_us = 5e6
+```
+
+Time without PPS before entering LOST state.
+
+- Defines maximum reliable HOLDOVER duration
+- After this, drift uncertainty becomes too large
+
+5 seconds is a conservative engineering choice for short-term holdover.
+
+---
+
+### 13.8 Summary
+
+These parameters collectively control:
+
+- convergence speed (alpha_offset)
+- stability (alpha_drift)
+- lock robustness (lock_min_pps, residual thresholds)
+- fault tolerance (holdover_timeout, lost_timeout)
+
+They are chosen to balance:
+
+- responsiveness
+- noise robustness
+- system stability
+
+and are suitable for a prototype-level Time Engine.
