@@ -28,6 +28,7 @@ class TimeEngineState:
 
     pps_residual_history: List[float] = field(default_factory=list)
     pps_interval_jitter_history: List[float] = field(default_factory=list)
+    pps_drift_history: List[float] = field(default_factory=list)
     drift_history: List[float] = field(default_factory=list)
     offset_history: List[float] = field(default_factory=list)
     confidence_history: List[float] = field(default_factory=list)
@@ -47,7 +48,8 @@ class TimeEngine:
 
         self.lock_min_pps = 3
         self.lock_residual_threshold_us = 300.0
-        self.relock_residual_threshold_us = 400.0
+        self.relock_residual_threshold_us = 800.0
+        self.unlock_residual_threshold_us = 1200.0
 
         self.holdover_timeout_us = 1_500_000
         self.lost_timeout_us = 5_000_000
@@ -56,7 +58,7 @@ class TimeEngine:
         self.max_drift_ppm = 50.0
 
         self.lock_jitter_threshold_us = 200.0
-        self.lock_drift_stability_ppm = 2.0
+        self.lock_drift_stability_ppm = 5.0
         self.lock_drift_window = 3
 
         self.confidence_window = 5
@@ -74,12 +76,17 @@ class TimeEngine:
         return abs(jitter_us) < self.lock_jitter_threshold_us
 
 
-    def _is_drift_stable(self) -> bool:
+    def _is_drift_stable(self, current_drift: Optional[float] = None) -> bool:
         s = self.state
-        if len(s.drift_history) < self.lock_drift_window:
-            return True  # warmup 不限制
 
-        recent = s.drift_history[-self.lock_drift_window:]
+        history = s.pps_drift_history[:]
+        if current_drift is not None:
+            history.append(float(current_drift))
+
+        if len(history) < self.lock_drift_window:
+            return True
+
+        recent = history[-self.lock_drift_window:]
         return max(recent) - min(recent) < self.lock_drift_stability_ppm
 
     def _window(self, values, n):
@@ -159,6 +166,10 @@ class TimeEngine:
         if not warmup and abs(residual_us) > self.outlier_threshold_us:
             warn(f"PPS outlier rejected: residual={residual_us:.2f}")
             s.consecutive_good_pps = 0
+
+            # rejected PPS 不更新 last_pps_board_time_us / target_time / measured_offset
+            # 否则会污染后续 drift、dt_s 和 holdover 判断
+            self._update_confidence(packet.board_time_us)
             return self._build_corrected_event(packet)
 
         # ===== drift =====
@@ -175,7 +186,7 @@ class TimeEngine:
                 self.alpha_drift * drift +
                 (1 - self.alpha_drift) * s.drift_ppm
             )
-            s.drift_history.append(float(s.drift_ppm))
+            s.pps_drift_history.append(float(s.drift_ppm))
 
         # ===== offset =====
         s.offset_us = (
@@ -183,32 +194,49 @@ class TimeEngine:
             (1 - self.alpha_offset) * s.offset_us
         )
 
-        # ===== lock logic =====
-        residual_ok = abs(residual_us) < self.lock_residual_threshold_us
-        jitter_ok = self._is_jitter_stable(jitter_us)
-        drift_ok = self._is_drift_stable()
+        # ===== lock / unlock / relock logic =====
 
+        jitter_ok = self._is_jitter_stable(jitter_us)
+        drift_ok = self._is_drift_stable(s.drift_ppm)
+
+        lock_residual_ok = abs(residual_us) < self.lock_residual_threshold_us
+        relock_residual_ok = abs(residual_us) < self.relock_residual_threshold_us
+        unlock_residual_bad = abs(residual_us) > self.unlock_residual_threshold_us
+
+        # LOCKED 状态不要太敏感，避免 normal 误 HOLDOVER
         if s.sync_state == SyncState.LOCKED:
-            if not (residual_ok and jitter_ok and drift_ok):
+            if unlock_residual_bad:
                 warn("LOCKED -> HOLDOVER (residual too large)")
                 s.consecutive_good_pps = 0
                 s.sync_state = SyncState.HOLDOVER
+            else:
+                # LOCKED 中的小抖动不退出，只维持状态
+                s.consecutive_good_pps = min(
+                    s.consecutive_good_pps + 1,
+                    self.lock_min_pps
+                )
+
         else:
-            if residual_ok:
+            # LOST 初次锁定更严格
+            if s.sync_state == SyncState.LOST:
+                residual_ok = lock_residual_ok
+            else:
+                # HOLDOVER 后 relock 应该更宽松
+                residual_ok = relock_residual_ok
+
+            if residual_ok and jitter_ok:
                 s.consecutive_good_pps += 1
             else:
                 s.consecutive_good_pps = max(0, s.consecutive_good_pps - 1)
 
-        # LOCK condition
-        if (
-            s.consecutive_good_pps >= self.lock_min_pps
-            and residual_ok
-            and jitter_ok
-            and drift_ok
-        ):
-            if s.sync_state != SyncState.LOCKED:
+            if (
+                s.consecutive_good_pps >= self.lock_min_pps
+                and residual_ok
+                and jitter_ok
+                and drift_ok
+            ):
                 info(f"LOCKED after {s.consecutive_good_pps} PPS")
-            s.sync_state = SyncState.LOCKED
+                s.sync_state = SyncState.LOCKED
 
         s.last_pps_board_time_us = packet.board_time_us
         s.last_target_time_us = target_time_us
@@ -357,7 +385,15 @@ class TimeEngine:
     # =========================
     def _build_corrected_event(self, packet: Packet) -> CorrectedEvent:
         s = self.state
-        corrected = packet.board_time_us + s.offset_us
+
+        predicted_offset = self._predict_offset(packet.board_time_us)
+        corrected = packet.board_time_us + predicted_offset
+
+        if s.last_corrected_us is not None:
+            if corrected <= s.last_corrected_us:
+                corrected = s.last_corrected_us + 1
+
+        s.last_corrected_us = corrected
 
         return CorrectedEvent(
             type=packet.type,
@@ -365,7 +401,7 @@ class TimeEngine:
             sensor_id=packet.sensor_id,
             board_time_us=packet.board_time_us,
             timestamp_corrected_us=corrected,
-            offset_us=s.offset_us,
+            offset_us=predicted_offset,
             drift_ppm=s.drift_ppm,
             confidence=s.confidence,
             sync_state=s.sync_state.value,

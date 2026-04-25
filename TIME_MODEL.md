@@ -215,7 +215,7 @@ timestamp_corrected_us = board_time_us + predicted_offset_us
 3. PPS interval jitter is small:
    |interval_us - 1_000_000| < jitter_threshold
 4. drift is stable:
-   max(drift over last N samples) - min(...) < drift_stability_threshold
+   max(drift over last N PPS samples) - min(...) < drift_stability_threshold
 
 #### Why needed
 
@@ -227,7 +227,10 @@ under unstable PPS or transient conditions.
 #### Exit condition
 
 ``` text
-PPS gap > holdover_timeout → HOLDOVER
+LOCKED exits to HOLDOVER when either:
+
+1. PPS gap > holdover_timeout
+2. |residual_us| > unlock_residual_threshold_us
 ```
 
 ---
@@ -282,6 +285,27 @@ Where:
 
 ---
 
+### 9.1 Outlier Rejection
+
+If a PPS residual exceeds `outlier_threshold_us` outside warmup, the PPS sample is rejected.
+
+``` text
+if |residual_us| > outlier_threshold_us:
+    reject PPS sample
+```
+
+Rejected PPS samples do not update:
+
+- `offset_us`
+- `drift_ppm`
+- `last_pps_board_time_us`
+- `last_target_time_us`
+- `last_measured_offset_us`
+
+This prevents a corrupted PPS sample from polluting the timing anchor, drift estimation, or holdover behavior.
+
+---
+
 ## 10. Jitter Definition
 
 ``` text
@@ -305,10 +329,12 @@ confidence ∈ [0, 1]
 
 ``` text
 confidence =
-0.35 * freshness_score +
-0.30 * residual_score +
-0.20 * drift_score +
-0.15 * jitter_score
+0.25 * freshness_score
++ 0.25 * residual_score
++ 0.15 * jitter_score
++ 0.15 * residual_stability_score
++ 0.10 * jitter_stability_score
++ 0.10 * drift_score
 ```
 
 ---
@@ -317,14 +343,24 @@ confidence =
 
 #### freshness_score
 
+For normal PPS-based states:
+
 ``` text
-freshness_score = max(0, 1 - age_s / T)
+freshness_score = max(0, 1 - age_s / 2.0)
+```
+
+For HOLDOVER:
+
+``` text
+freshness_score = exp(-age_s / holdover_confidence_tau_s)
 ```
 
 Where:
 
-- `age_s = time since last PPS`
-- `T ≈ 5s`
+- `age_s = time since last accepted PPS`
+- `holdover_confidence_tau_s = 3.0`
+- in non-HOLDOVER states, freshness decays linearly to 0 over 2 seconds
+- in HOLDOVER, freshness decays exponentially
 
 ---
 
@@ -359,7 +395,8 @@ if LOST:
 confidence ≤ 0.2
 
 if HOLDOVER:
-confidence ≤ 0.7
+confidence = min(confidence, holdover_confidence_cap)
+confidence *= freshness_score
 ```
 
 ---
@@ -465,17 +502,27 @@ Threshold for acceptable offset residual during lock acquisition.
 ### 13.5 relock_residual_threshold_us
 
 ``` text
-relock_residual_threshold_us = 400
+relock_residual_threshold_us = 800
 ```
 
 Threshold for re-locking after HOLDOVER.
 
-- Slightly larger than lock threshold to allow faster recovery
-- Prevents oscillation between states
+- Initial lock uses a stricter residual threshold.
+- Relock after HOLDOVER uses a looser residual threshold.
 
 ---
 
-### 13.6 holdover_timeout_us
+### 13.6 unlock_residual_threshold_us
+
+``` text
+unlock_residual_threshold_us = 1200
+```
+
+Threshold for un-locking.
+
+- Unlock from LOCKED uses a separate larger threshold to avoid false HOLDOVER caused by small jitter.
+
+### 13.7 holdover_timeout_us
 
 ``` text
 holdover_timeout_us = 1.5e6
@@ -492,7 +539,7 @@ Time without PPS before entering HOLDOVER.
 
 ---
 
-### 13.7 lost_timeout_us
+### 13.8 lost_timeout_us
 
 ``` text
 lost_timeout_us = 5e6
@@ -507,7 +554,7 @@ Time without PPS before entering LOST state.
 
 ---
 
-### 13.8 Summary
+### 13.9 Summary
 
 These parameters collectively control:
 
