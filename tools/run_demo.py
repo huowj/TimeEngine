@@ -27,12 +27,23 @@ def board_time_from_true_time_us(true_time_us, offset_us, drift_ppm):
     return int(round(true_time_us - offset_us + drift_term))
 
 
+def drift_for_time(true_time_us, scenario):
+    if scenario == "drift_jump" and true_time_us >= 6_000_000:
+        return 40.0
+    return 12.0
+
+
+def offset_for_time(true_time_us, scenario):
+    if scenario == "drift_jump" and true_time_us >= 6_000_000:
+        return 6500.0
+    return 3500.0
+
+
 def generate_events(scenario: str):
     random.seed(7)
 
     duration_s = 12
     offset_us = 3500.0
-    drift_ppm = 12.0
 
     # 场景控制
     if scenario == "normal":
@@ -46,6 +57,10 @@ def generate_events(scenario: str):
     elif scenario == "jitter_outlier":
         pps_drop = []
         pps_outlier = {5: 5000}
+
+    elif scenario == "drift_jump":
+        pps_drop = []
+        pps_outlier = {}
 
     else:
         raise ValueError("Unknown scenario")
@@ -64,8 +79,8 @@ def generate_events(scenario: str):
 
         bt = board_time_from_true_time_us(
             true_time_us + jitter,
-            offset_us,
-            drift_ppm
+            offset_for_time(true_time_us, scenario),
+            drift_for_time(true_time_us, scenario)
         )
 
         pps_events.append({
@@ -83,8 +98,8 @@ def generate_events(scenario: str):
 
         bt = board_time_from_true_time_us(
             true_time_us + jitter,
-            offset_us,
-            drift_ppm
+            offset_for_time(true_time_us, scenario),
+            drift_for_time(true_time_us, scenario)
         )
 
         sensor_events.append({
@@ -101,8 +116,8 @@ def generate_events(scenario: str):
 
         bt = board_time_from_true_time_us(
             true_time_us + jitter,
-            offset_us,
-            drift_ppm
+            offset_for_time(true_time_us, scenario),
+            drift_for_time(true_time_us, scenario)
         )
 
         sensor_events.append({
@@ -131,7 +146,7 @@ def generate_events(scenario: str):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", default="normal",
-                        choices=["normal", "holdover", "jitter_outlier"])
+                        choices=["normal", "holdover", "jitter_outlier", "drift_jump"])
     args = parser.parse_args()
 
     # 生成数据

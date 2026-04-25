@@ -88,6 +88,7 @@ Other scenarios:
 
 PYTHONPATH=. python3 tools/run_demo.py --scenario holdover
 PYTHONPATH=. python3 tools/run_demo.py --scenario jitter_outlier
+PYTHONPATH=. python3 tools/run_demo.py --scenario drift_jump
 ```
 
 ## Outputs
@@ -127,25 +128,47 @@ The system exposes the following metrics:
 ## Example Summary
 
 ``` text
-Scenario: holdover
+Scenario: normal
+Total events: 1572
+Final state: LOCKED
+Final offset_us: 3382.61
+Final drift_ppm: -9.95
+Final confidence: 0.946
 
-Time to LOCKED: 2.83 s
-Holdover duration: 3.92 s
-Relock PPS count: 3
+=== Observability Metrics ===
+Time to LOCKED: N/A
+Holdover duration: 5.00 s
+Relock PPS count: 0
 
-Residual stats:
-p50: 23.12 us
-p95: 85.22 us
-max: 310.45 us
+Residual stats (us):
+  p50: 31.00
+  p95: 68.19
+  max: 68.19
 
-Jitter stats:
-p50: 18.20 us
-p95: 44.90 us
-max: 210.33 us
+Jitter stats (us):
+  p50: 10.00
+  p95: 45.00
+  max: 45.00
 
 Confidence:
-min: 0.31
-recovery_time: 11.2 s
+  min: 0.000
+  recovery_time: 2.99653
+
+Offset continuity (us):
+  max_jump: 3494.00
+  p95: 0.13
+
+Holdover drift growth: 67.71 us
+
+Confidence behavior:
+  degraded during holdover: True
+  recovered after relock: True
+
+State transitions:
+  -3633 us -> LOST
+  2996530 us -> LOCKED
+  5996567 us -> HOLDOVER
+  10996642 us -> LOCKED
 ```
 
 ---

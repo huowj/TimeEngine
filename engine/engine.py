@@ -59,6 +59,16 @@ class TimeEngine:
         self.lock_drift_stability_ppm = 2.0
         self.lock_drift_window = 3
 
+        self.confidence_window = 5
+
+        self.conf_residual_limit_us = 500.0
+        self.conf_jitter_limit_us = 300.0
+        self.conf_residual_std_limit_us = 300.0
+        self.conf_jitter_std_limit_us = 200.0
+
+        self.holdover_confidence_tau_s = 3.0
+        self.holdover_confidence_cap = 0.7
+
     # =========================
     def _is_jitter_stable(self, jitter_us: float) -> bool:
         return abs(jitter_us) < self.lock_jitter_threshold_us
@@ -71,6 +81,20 @@ class TimeEngine:
 
         recent = s.drift_history[-self.lock_drift_window:]
         return max(recent) - min(recent) < self.lock_drift_stability_ppm
+
+    def _window(self, values, n):
+        return values[-n:] if len(values) >= n else values
+
+
+    def _std_score(self, values, limit):
+        if len(values) < 2:
+            return 1.0
+
+        mean = sum(values) / len(values)
+        var = sum((x - mean) ** 2 for x in values) / len(values)
+        std = math.sqrt(var)
+
+        return max(0.0, 1.0 - std / limit)
 
     # =========================
     def process_packet(self, packet: Packet) -> CorrectedEvent:
@@ -266,25 +290,64 @@ class TimeEngine:
 
         age_s = (board_time_us - s.last_pps_board_time_us) / 1_000_000.0
 
+        residuals = self._window(
+            [abs(x) for x in s.pps_residual_history],
+            self.confidence_window
+        )
+
+        jitters = self._window(
+            [abs(x) for x in s.pps_interval_jitter_history],
+            self.confidence_window
+        )
+
+        # freshness
         if s.sync_state == SyncState.HOLDOVER:
-            freshness = math.exp(-age_s / 3.0)
+            freshness_score = math.exp(-age_s / self.holdover_confidence_tau_s)
         else:
-            freshness = max(0.0, 1.0 - age_s / 2.0)
+            freshness_score = max(0.0, 1.0 - age_s / 2.0)
 
-        residual = abs(s.pps_residual_history[-1]) if s.pps_residual_history else 1000
-        residual_score = max(0, 1 - residual / 500)
+        # level quality
+        residual_mean = sum(residuals) / len(residuals) if residuals else self.conf_residual_limit_us
+        jitter_mean = sum(jitters) / len(jitters) if jitters else 0.0
 
-        jitter = abs(s.pps_interval_jitter_history[-1]) if s.pps_interval_jitter_history else 0
-        jitter_score = max(0, 1 - jitter / 300)
+        residual_score = max(
+            0.0,
+            1.0 - residual_mean / self.conf_residual_limit_us
+        )
 
-        drift_score = max(0, 1 - abs(s.drift_ppm) / 50)
+        jitter_score = max(
+            0.0,
+            1.0 - jitter_mean / self.conf_jitter_limit_us
+        )
+
+        # stability quality
+        residual_stability_score = self._std_score(
+            residuals,
+            self.conf_residual_std_limit_us
+        )
+
+        jitter_stability_score = self._std_score(
+            jitters,
+            self.conf_jitter_std_limit_us
+        )
+
+        drift_score = max(
+            0.0,
+            1.0 - abs(s.drift_ppm) / self.max_drift_ppm
+        )
 
         confidence = (
-            0.35 * freshness +
-            0.30 * residual_score +
-            0.20 * drift_score +
-            0.15 * jitter_score
+            0.25 * freshness_score +
+            0.25 * residual_score +
+            0.15 * jitter_score +
+            0.15 * residual_stability_score +
+            0.10 * jitter_stability_score +
+            0.10 * drift_score
         )
+
+        if s.sync_state == SyncState.HOLDOVER:
+            confidence = min(confidence, self.holdover_confidence_cap)
+            confidence *= freshness_score
 
         if s.sync_state == SyncState.LOST:
             confidence = min(confidence, 0.2)
