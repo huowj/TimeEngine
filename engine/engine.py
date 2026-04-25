@@ -55,6 +55,23 @@ class TimeEngine:
         self.outlier_threshold_us = 3000.0
         self.max_drift_ppm = 50.0
 
+        self.lock_jitter_threshold_us = 200.0
+        self.lock_drift_stability_ppm = 2.0
+        self.lock_drift_window = 3
+
+    # =========================
+    def _is_jitter_stable(self, jitter_us: float) -> bool:
+        return abs(jitter_us) < self.lock_jitter_threshold_us
+
+
+    def _is_drift_stable(self) -> bool:
+        s = self.state
+        if len(s.drift_history) < self.lock_drift_window:
+            return True  # warmup 不限制
+
+        recent = s.drift_history[-self.lock_drift_window:]
+        return max(recent) - min(recent) < self.lock_drift_stability_ppm
+
     # =========================
     def process_packet(self, packet: Packet) -> CorrectedEvent:
         s = self.state
@@ -114,7 +131,7 @@ class TimeEngine:
         s.pps_residual_history.append(residual_us)
 
         # ===== outlier =====
-        warmup = s.consecutive_good_pps < 3
+        warmup = s.consecutive_good_pps < self.lock_min_pps
         if not warmup and abs(residual_us) > self.outlier_threshold_us:
             warn(f"PPS outlier rejected: residual={residual_us:.2f}")
             s.consecutive_good_pps = 0
@@ -134,6 +151,7 @@ class TimeEngine:
                 self.alpha_drift * drift +
                 (1 - self.alpha_drift) * s.drift_ppm
             )
+            s.drift_history.append(float(s.drift_ppm))
 
         # ===== offset =====
         s.offset_us = (
@@ -142,21 +160,28 @@ class TimeEngine:
         )
 
         # ===== lock logic =====
+        residual_ok = abs(residual_us) < self.lock_residual_threshold_us
+        jitter_ok = self._is_jitter_stable(jitter_us)
+        drift_ok = self._is_drift_stable()
+
         if s.sync_state == SyncState.LOCKED:
-            if abs(residual_us) > self.outlier_threshold_us:
-                warn("LOCKED -> HOLDOVER (outlier detected)")
+            if not (residual_ok and jitter_ok and drift_ok):
+                warn("LOCKED -> HOLDOVER (residual too large)")
                 s.consecutive_good_pps = 0
                 s.sync_state = SyncState.HOLDOVER
         else:
-            if warmup:
+            if residual_ok:
                 s.consecutive_good_pps += 1
             else:
-                if abs(residual_us) < self.relock_residual_threshold_us:
-                    s.consecutive_good_pps += 1
-                else:
-                    s.consecutive_good_pps = 1
+                s.consecutive_good_pps = max(0, s.consecutive_good_pps - 1)
 
-        if s.consecutive_good_pps >= self.lock_min_pps:
+        # LOCK condition
+        if (
+            s.consecutive_good_pps >= self.lock_min_pps
+            and residual_ok
+            and jitter_ok
+            and drift_ok
+        ):
             if s.sync_state != SyncState.LOCKED:
                 info(f"LOCKED after {s.consecutive_good_pps} PPS")
             s.sync_state = SyncState.LOCKED

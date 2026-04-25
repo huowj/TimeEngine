@@ -211,9 +211,18 @@ timestamp_corrected_us = board_time_us + predicted_offset_us
 #### Enter conditions
 
 1. consecutive_good_pps ≥ 3
-2. |residual_us| < threshold (≈ 500~800 us)
-3. PPS interval ≈ 1 second
-4. drift is stable
+2. |residual_us| < threshold
+3. PPS interval jitter is small:
+   |interval_us - 1_000_000| < jitter_threshold
+4. drift is stable:
+   max(drift over last N samples) - min(...) < drift_stability_threshold
+
+#### Why needed
+
+Residual alone is insufficient for lock detection.
+
+Without jitter and drift constraints, the system may falsely enter LOCKED
+under unstable PPS or transient conditions.
 
 #### Exit condition
 
@@ -264,8 +273,12 @@ Receive stable PPS → LOCKED
 ## 9. Residual Definition
 
 ``` text
-residual_us = measured_offset_us - offset_us
+residual_us = measured_offset_us - predicted_offset_us
 ```
+
+Where:
+
+- residual_us is the prediction error of the time model
 
 ---
 
