@@ -42,7 +42,7 @@ System must show:
 | holdover | enters `HOLDOVER` after PPS gap > 1.5s |
 | holdover | enters `LOST` if PPS gap > 5s |
 | holdover recovery | returns to `LOCKED` after stable PPS resumes |
-| jitter_outlier | rejects bad PPS and avoids false lock |
+| jitter_outlier | rejects bad PPS and does not corrupt offset/drift or lock state |
 | drift_jump | confidence drops and model re-converges |
 
 ---
@@ -75,7 +75,7 @@ Each demo run must produce observable values for:
 Must support:
 
 ``` text
-python3 -m tools.run_demo --scenario <scenario>
+PYTHONPATH=. python3 tools/run_demo.py --scenario <scenario>
 ```
 
 Scenarios:
@@ -148,6 +148,8 @@ System must handle:
 | drift jump | confidence must decrease temporarily |
 | drift jump | offset/drift must re-converge |
 | non-monotonic board time | corrected timestamp remains monotonic |
+
+## 7. Output Artifacts
 
 ### Acceptance Boundary
 
