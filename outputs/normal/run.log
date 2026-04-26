@@ -1,0 +1,10 @@
+[14:58:40] [INFO] First PPS anchor established, offset=3494.00
+[14:58:40] [INFO] LOCKED after 3 PPS
+====================================
+Scenario: normal
+Events processed: 1572
+Final state: LOCKED
+Offset: 3382.61
+Drift: -9.95
+Confidence: 0.946
+====================================

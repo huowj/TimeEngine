@@ -1,0 +1,12 @@
+[14:58:49] [INFO] First PPS anchor established, offset=3494.00
+[14:58:49] [INFO] LOCKED after 3 PPS
+[14:58:49] [WARN] Enter HOLDOVER at t=6496984
+[14:58:49] [INFO] LOCKED after 4 PPS
+====================================
+Scenario: holdover
+Events processed: 1568
+Final state: LOCKED
+Offset: 3403.78
+Drift: -8.47
+Confidence: 0.687
+====================================

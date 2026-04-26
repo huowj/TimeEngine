@@ -1,0 +1,13 @@
+[14:58:59] [INFO] First PPS anchor established, offset=3494.00
+[14:58:59] [INFO] LOCKED after 3 PPS
+[14:58:59] [WARN] PPS outlier rejected: residual=-5009.65
+[14:58:59] [WARN] Enter HOLDOVER at t=5496562
+[14:58:59] [INFO] LOCKED after 3 PPS
+====================================
+Scenario: jitter_outlier
+Events processed: 1572
+Final state: LOCKED
+Offset: 3383.07
+Drift: -9.35
+Confidence: 0.946
+====================================

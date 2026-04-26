@@ -1,0 +1,12 @@
+[14:59:10] [INFO] First PPS anchor established, offset=3494.00
+[14:59:10] [INFO] LOCKED after 3 PPS
+[14:59:10] [WARN] LOCKED -> HOLDOVER (residual too large)
+[14:59:10] [INFO] LOCKED after 3 PPS
+====================================
+Scenario: drift_jump
+Events processed: 1572
+Final state: LOCKED
+Offset: 5737.63
+Drift: -20.87
+Confidence: 0.534
+====================================
