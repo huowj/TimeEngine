@@ -119,7 +119,7 @@ System must compute:
 | jitter p95 | normal | < 300 us |
 | confidence min | normal | >= 0.6 after LOCKED |
 | confidence degradation | holdover | decreases during PPS loss |
-| confidence recovery | relock | recovers within < 4 PPS |
+| confidence recovery | relock | increases after stable PPS resumes within <= 4 PPS |
 | offset continuity max jump | normal | < 1000 us |
 | holdover drift growth | holdover | bounded, no unbounded growth |
 
