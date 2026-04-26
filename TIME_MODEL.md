@@ -236,7 +236,7 @@ timestamp_corrected_us = board_time_us + predicted_offset_us
 #### Enter conditions
 
 1. consecutive_good_pps ≥ 3
-2. |residual_us| < threshold
+2. `|residual_us| < lock_residual_threshold_us` for initial lock
 3. PPS interval jitter is small:
    |interval_us - 1_000_000| < jitter_threshold
 4. drift is stable:
@@ -279,6 +279,8 @@ PPS missing > holdover_timeout (≈1.5s)
 PPS resumes and stabilizes → LOCKED
 PPS missing > lost_timeout (≈5s) → LOST
 ```
+
+Relock from HOLDOVER uses `relock_residual_threshold_us`, which is intentionally looser than the initial lock threshold to allow faster recovery after PPS resumes.
 
 ---
 
@@ -644,7 +646,7 @@ If exceeded, the PPS sample is rejected and does not update offset, drift, or PP
 
 ---
 
-### 13.10 outlier_threshold_us
+### 13.10 lock_jitter_threshold_us
 
 ``` text
 lock_jitter_threshold_us = 200
@@ -681,10 +683,12 @@ These parameters control how confidence is computed from recent residual, jitter
 
 These parameters collectively control:
 
-- convergence speed (alpha_offset)
-- stability (alpha_drift)
-- lock robustness (lock_min_pps, residual thresholds)
-- fault tolerance (holdover_timeout, lost_timeout)
+- convergence speed (`alpha_offset`)
+- drift stability (`alpha_drift`)
+- lock robustness (`lock_min_pps`, residual thresholds, jitter threshold, drift stability threshold)
+- fault tolerance (`holdover_timeout_us`, `lost_timeout_us`)
+- outlier protection (`outlier_threshold_us`)
+- confidence behavior (`confidence_window`, holdover confidence parameters)
 
 They are chosen to balance:
 
@@ -696,7 +700,7 @@ and are suitable for a prototype-level Time Engine.
 
 ---
 
-## 14. Delivery Note
+## 14. Delivery and Payment Note
 
 This document defines the authoritative host-side time model for the DSIL SDK V1 Time Engine trial.
 
@@ -727,4 +731,14 @@ The delivery is considered complete when:
 
 ``` text
 pytest -q
-‵‵‵
+```
+
+### Payment Note
+
+Payment can be released after the reviewer confirms that:
+
+1. all four required demo scenarios run successfully
+2. all required artifacts are generated
+3. `pytest -q` passes
+4. this `time_model.md` is accepted as the DSIL SDK Time Engine model specification
+
