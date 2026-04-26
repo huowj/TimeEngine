@@ -1,0 +1,41 @@
+Scenario: jitter_outlier
+Total events: 1572
+Final state: LOCKED
+Final offset_us: 3383.07
+Final drift_ppm: -9.35
+Final confidence: 0.946
+
+=== Observability Metrics ===
+Time to LOCKED: N/A
+Holdover duration: 3.50 s
+Relock PPS count: 0
+
+Residual stats (us):
+  p50: 35.71
+  p95: 5009.65
+  max: 5009.65
+
+Jitter stats (us):
+  p50: 10.00
+  p95: 1000027.00
+  max: 1000027.00
+
+Confidence:
+  min: 0.000
+  recovery_time: 2.99653
+
+Offset continuity (us):
+  max_jump: 3494.00
+  p95: 0.11
+
+Holdover drift growth: 46.60 us
+
+Confidence behavior:
+  degraded during holdover: True
+  recovered after relock: True
+
+State transitions:
+  -3633 us -> LOST
+  2996530 us -> LOCKED
+  5496562 us -> HOLDOVER
+  8996634 us -> LOCKED

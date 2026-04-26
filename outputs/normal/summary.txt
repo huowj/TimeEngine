@@ -1,0 +1,33 @@
+Scenario: normal
+Total events: 1572
+Final state: LOCKED
+Final offset_us: 3382.61
+Final drift_ppm: -9.95
+Final confidence: 0.946
+
+=== Observability Metrics ===
+Time to LOCKED: N/A
+Holdover duration: 0.00 s
+Relock PPS count: None
+
+Residual stats (us):
+  p50: 31.00
+  p95: 68.19
+  max: 68.19
+
+Jitter stats (us):
+  p50: 10.00
+  p95: 45.00
+  max: 45.00
+
+Confidence:
+  min: 0.000
+  recovery_time: 2.99653
+
+Offset continuity (us):
+  max_jump: 3494.00
+  p95: 0.13
+
+State transitions:
+  -3633 us -> LOST
+  2996530 us -> LOCKED

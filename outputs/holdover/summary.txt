@@ -1,0 +1,41 @@
+Scenario: holdover
+Total events: 1568
+Final state: LOCKED
+Final offset_us: 3403.78
+Final drift_ppm: -8.47
+Final confidence: 0.687
+
+=== Observability Metrics ===
+Time to LOCKED: N/A
+Holdover duration: 5.50 s
+Relock PPS count: 0
+
+Residual stats (us):
+  p50: 11.60
+  p95: 106.35
+  max: 106.35
+
+Jitter stats (us):
+  p50: 7.00
+  p95: 4000078.00
+  max: 4000078.00
+
+Confidence:
+  min: 0.000
+  recovery_time: 2.99653
+
+Offset continuity (us):
+  max_jump: 3494.00
+  p95: 0.11
+
+Holdover drift growth: 56.21 us
+
+Confidence behavior:
+  degraded during holdover: True
+  recovered after relock: False
+
+State transitions:
+  -3811 us -> LOST
+  2996530 us -> LOCKED
+  6496984 us -> HOLDOVER
+  11996655 us -> LOCKED
