@@ -45,6 +45,31 @@ The only time value exported by the Time Engine is:
 
 ---
 
+### 2.4 PPS Discipline Strategy
+
+The Time Engine treats PPS as a recurring timing constraint rather than as a standalone clock.
+
+Each accepted PPS sample is used to discipline the host-side mapping from `board_time_us` to `timestamp_corrected_us`.
+
+The discipline process is:
+
+1. Convert the PPS event into an expected absolute second boundary.
+2. Compute `measured_offset_us` from the PPS target time and observed `board_time_us`.
+3. Predict the current offset using the existing offset and drift model.
+4. Compute `residual_us` as the prediction error.
+5. Reject PPS samples whose residual exceeds `outlier_threshold_us` outside warmup.
+6. Use accepted PPS samples to update:
+   - `offset_us`
+   - `drift_ppm`
+   - PPS timing anchors
+   - confidence inputs
+
+Rejected PPS samples are treated as invalid measurements and must not discipline the model.
+
+This ensures that PPS corrects long-term timing error while avoiding corruption from transient PPS glitches or outliers.
+
+---
+
 ## 3. Event Types
 
 ```json
@@ -325,6 +350,27 @@ confidence ∈ [0, 1]
 
 ---
 
+### 11.1.1 Interpretation
+
+`confidence` is an engineering quality indicator for the current corrected timestamp model.
+
+It is not an absolute proof of time correctness.  
+Instead, it represents how trustworthy the current time correction is based on recent PPS behavior and model stability.
+
+The confidence score decreases when:
+
+- the last accepted PPS becomes stale
+- PPS residuals become large
+- PPS interval jitter increases
+- residuals become unstable over a recent window
+- jitter becomes unstable over a recent window
+- estimated drift approaches the configured drift limit
+- the engine enters HOLDOVER or LOST
+
+The confidence score increases when stable PPS samples resume and the model residual, jitter, and drift return to bounded values.
+
+---
+
 ### 11.2 Formula
 
 ``` text
@@ -375,7 +421,7 @@ residual_score = max(0, 1 - |residual_us| / residual_limit)
 #### drift_score
 
 ``` text
-drift_score = max(0, 1 - |drift_ppm| / drift_limit)
+drift_score = max(0, 1 - |drift_ppm| / max_drift_ppm)
 ```
 
 ---
@@ -385,6 +431,38 @@ drift_score = max(0, 1 - |drift_ppm| / drift_limit)
 ``` text
 jitter_score = max(0, 1 - |jitter_us| / jitter_limit)
 ```
+
+---
+
+#### residual_stability_score
+
+`residual_stability_score` measures how stable recent PPS prediction errors are.
+
+It is computed from the standard deviation of recent absolute residual values:
+
+``` text
+residual_stability_score = max(0, 1 - std(residual_window) / residual_std_limit)
+```
+
+A high value means recent prediction errors are stable.
+
+A low value means the time model is experiencing unstable PPS residual behavior.
+
+---
+
+#### jitter_stability_score
+
+`jitter_stability_score` measures how stable recent PPS intervals are.
+
+It is computed from the standard deviation of recent absolute jitter values:
+
+```text
+jitter_stability_score = max(0, 1 - std(jitter_window) / jitter_std_limit)
+```
+
+A high value means PPS interval timing is stable.
+
+A low value means PPS timing is unstable even if the average jitter is still bounded.
 
 ---
 
@@ -554,7 +632,52 @@ Time without PPS before entering LOST state.
 
 ---
 
-### 13.9 Summary
+### 13.9 outlier_threshold_us
+
+``` text
+outlier_threshold_us = 3000
+```
+
+Maximum allowed PPS prediction residual outside warmup.
+
+If exceeded, the PPS sample is rejected and does not update offset, drift, or PPS anchors.
+
+---
+
+### 13.10 outlier_threshold_us
+
+``` text
+lock_jitter_threshold_us = 200
+```
+
+Maximum allowed PPS interval jitter for lock acquisition.
+
+---
+
+### 13.11 lock_drift_stability_ppm
+
+``` text
+lock_drift_stability_ppm = 5
+lock_drift_window = 3
+```
+
+Drift is considered stable when the range of recent PPS drift estimates over the last N PPS samples is below this threshold.
+
+---
+
+### 13.12 confidence parameters
+
+``` text
+confidence_window = 5
+holdover_confidence_tau_s = 3.0
+holdover_confidence_cap = 0.7
+```
+
+These parameters control how confidence is computed from recent residual, jitter, and holdover freshness behavior.
+
+---
+
+### 13.13 Summary
 
 These parameters collectively control:
 
@@ -570,3 +693,38 @@ They are chosen to balance:
 - system stability
 
 and are suitable for a prototype-level Time Engine.
+
+---
+
+## 14. Delivery Note
+
+This document defines the authoritative host-side time model for the DSIL SDK V1 Time Engine trial.
+
+The delivery is considered complete when:
+
+1. `time_model.md` defines the implemented time model, including:
+   - offset model
+   - drift model
+   - PPS discipline strategy
+   - LOCKED / HOLDOVER / LOST state conditions
+   - confidence calculation and interpretation
+
+2. The demo pipeline runs successfully for:
+   - `normal`
+   - `holdover`
+   - `jitter_outlier`
+   - `drift_jump`
+
+3. Each demo scenario produces:
+   - `summary.txt`
+   - `metrics.jsonl`
+   - `corrected_events.jsonl`
+   - `offset.png`
+   - `drift.png`
+   - `confidence.png`
+
+4. The validation test suite passes with:
+
+``` text
+pytest -q
+‵‵‵

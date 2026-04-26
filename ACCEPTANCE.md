@@ -75,7 +75,7 @@ Each demo run must produce observable values for:
 Must support:
 
 ``` text
-PYTHONPATH=. python3 tools/run_demo.py --scenario <scenario>
+python3 -m tools.run_demo --scenario <scenario>
 ```
 
 Scenarios:

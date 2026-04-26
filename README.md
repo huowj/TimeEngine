@@ -82,13 +82,13 @@ The demo includes three validation scenarios:
 ## Run Demo
 
 ```bash
-PYTHONPATH=. python3 tools/run_demo.py --scenario normal
+python3 -m tools.run_demo --scenario normal
 
 Other scenarios:
 
-PYTHONPATH=. python3 tools/run_demo.py --scenario holdover
-PYTHONPATH=. python3 tools/run_demo.py --scenario jitter_outlier
-PYTHONPATH=. python3 tools/run_demo.py --scenario drift_jump
+python3 -m tools.run_demo --scenario holdover
+python3 -m tools.run_demo --scenario jitter_outlier
+python3 -m tools.run_demo --scenario drift_jump
 ```
 
 ## Outputs
