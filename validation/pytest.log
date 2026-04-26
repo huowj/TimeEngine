@@ -1,0 +1,16 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-9.0.3, pluggy-1.6.0
+rootdir: /home/wenjun/TimeEngine
+configfile: pytest.ini
+collected 16 items
+
+tests/test_confidence.py ..                                              [ 12%]
+tests/test_drift.py ..                                                   [ 25%]
+tests/test_holdover.py .                                                 [ 31%]
+tests/test_monotonic.py ..                                               [ 43%]
+tests/test_outlier.py .                                                  [ 50%]
+tests/test_reliability.py ....                                           [ 75%]
+tests/test_state_machine.py ..                                           [ 87%]
+tests/test_time_model.py ..                                              [100%]
+
+============================== 16 passed in 0.03s ==============================
